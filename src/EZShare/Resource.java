@@ -7,7 +7,7 @@
  * This class is used to represent each resource.
  */
 
-package server;
+package EZShare;
 
 import java.util.ArrayList;
 import java.util.List;

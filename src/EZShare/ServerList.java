@@ -7,7 +7,7 @@
  * Class for managing list of servers that the current server is aware of
  */
 
-package server;
+package EZShare;
 
 import java.net.InetAddress;
 import java.net.UnknownHostException;

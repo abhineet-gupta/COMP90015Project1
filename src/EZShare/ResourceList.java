@@ -10,7 +10,7 @@
  *      using 'synchronised' for concurrency protection.
  */
 
-package server;
+package EZShare;
 
 import java.net.URI;
 import java.util.ArrayList;

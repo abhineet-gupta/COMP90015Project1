@@ -7,7 +7,7 @@
  * Class that defines serverException and error message
  */
 
-package server;
+package EZShare;
 
 @SuppressWarnings("serial")
 public class serverException extends Exception {

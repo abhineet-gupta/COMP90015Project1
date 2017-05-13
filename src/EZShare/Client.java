@@ -7,7 +7,7 @@
  * Client-side application
  */
 
-package client;
+package EZShare;
 
 import java.io.DataInputStream;
 import java.io.DataOutputStream;

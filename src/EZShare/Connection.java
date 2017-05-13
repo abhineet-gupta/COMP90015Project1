@@ -9,7 +9,7 @@
  * It implements the major functionality expected of the server e.g. Publish, Remove, etc.
  */
 
-package server;
+package EZShare;
 
 import java.io.*;
 import java.net.*;
