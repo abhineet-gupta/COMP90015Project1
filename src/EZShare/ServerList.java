@@ -1,6 +1,6 @@
 /*
  * Distributed Systems
- * Group Project 1
+ * Group Project 2
  * Sem 1, 2017
  * Group: AALT
  * 
@@ -17,14 +17,15 @@ import org.json.simple.JSONArray;
 import org.json.simple.JSONObject;
 
 public class ServerList {
-	private static JSONArray serverList = new JSONArray(); //stores the list of servers
-	private static Integer MIN_PORT = 1024;    //0-1023 are reserved for system
-	private static Integer MAX_PORT = 65535;
+	private JSONArray serverList = new JSONArray(); //stores the list of servers
+	private Integer MIN_PORT = 1024;    //0-1023 are reserved for system
+	private Integer MAX_PORT = 65535;
 	
 	//Update current server list with an incoming list i.e. a union of the two lists
 	@SuppressWarnings("unchecked")
-	public synchronized static void update(JSONArray newList, String hostname, int hostport) 
+	public synchronized void update(JSONArray newList, String hostname, int hostport, Boolean secure) 
 			throws ClassCastException, UnknownHostException, NumberFormatException, serverException {
+		JSONArray realNewServerList = new JSONArray();
 
 	    //For each server in incoming list
 	    for (Object newServerObject : newList) {
@@ -42,6 +43,7 @@ public class ServerList {
 			boolean safeToAdd = true;
 			//don't add if the server is self
 			if (newHostname.equals(hostname) && newPort == hostport){
+				System.out.println("not add itself");
 			    safeToAdd = false;
 			}
 			
@@ -56,12 +58,18 @@ public class ServerList {
 	            }
 			}
 			
-			if (safeToAdd) serverList.add(newServerJSON);
-		}		
+			if (safeToAdd) {
+				serverList.add(newServerJSON);
+				realNewServerList.add(newServerJSON);
+			}
+		}
+	    
+	    //notify subscription manager about new servers
+	    SubscriptionManager.newServerCome(realNewServerList, secure);
 	}
 	
 	//Select a random server from the list
-	public static synchronized JSONObject select() {
+	public synchronized JSONObject select() {
 	    if (serverList.size() > 0) {
 			int random = ThreadLocalRandom.current().nextInt(0, serverList.size());
 			JSONObject randomServer = (JSONObject) serverList.get(random);
@@ -70,15 +78,15 @@ public class ServerList {
 		return null;
 	}
 	
-	public static int getLength() {
+	public int getLength() {
 		return serverList.size();
 	}
 	
-	public static synchronized void remove(JSONObject server) {
+	public synchronized void remove(JSONObject server) {
 		serverList.remove(server);
 	}
 
-    public static JSONArray getCopyServerList() {
+    public JSONArray getCopyServerList() {
         if (serverList.size() > 0) return (JSONArray) serverList.clone();
         return null;
     }

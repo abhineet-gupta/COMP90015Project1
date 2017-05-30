@@ -1,6 +1,6 @@
 /*
  * Distributed Systems
- * Group Project 1
+ * Group Project 2
  * Sem 1, 2017
  * Group: AALT
  * 
@@ -12,6 +12,7 @@
 
 package EZShare;
 
+import java.io.IOException;
 import java.net.URI;
 import java.util.ArrayList;
 import java.util.List;
@@ -19,7 +20,7 @@ import java.util.List;
 public class ResourceList {
 	private static ArrayList<Resource> resourceList = new ArrayList<Resource>();
   
-	private synchronized static boolean modifyReourceList (boolean operation, Resource resource) throws serverException {
+	private synchronized static boolean modifyResourceList (boolean operation, Resource resource) throws serverException {
 		//true for add, false for remove 
 		if (operation) {
 			return resourceList.add(resource);
@@ -29,15 +30,17 @@ public class ResourceList {
 	}
 	
 	//thread safe because of "synchronized"
-	public static void addResource(Resource newResource) throws serverException {
+	public static void addResource(Resource newResource) throws serverException, IOException {
 		//Check if resource already exists with same channel and URI
 		Resource match = queryForChannelURI(newResource);
 		
 		//if no existing resource channel and URI matches... 
 		if (match == null) {
 		    //...then add it.
-			if (!modifyReourceList(true, newResource)) {
+			if (!modifyResourceList(true, newResource)) {
 				throw new serverException("cannot publish resource");
+			} else {
+				SubscriptionManager.allSubMatch(newResource);
 			}
 			//otherwise...
 		} else { 
@@ -47,9 +50,19 @@ public class ResourceList {
 				throw new serverException("cannot publish resource");
 			
 			   //...else: remove existing resource with that PK and add new one 
-			if (!modifyReourceList(false, match) || !modifyReourceList(true, newResource)) 
+			//if (!modifyReourceList(false, match) || !modifyReourceList(true, newResource)) 
+				//throw new serverException("cannot publish resource");
+			
+			if(!modifyResourceList(false, match))
 				throw new serverException("cannot publish resource");
+			
+			if(modifyResourceList(true, newResource)){
+				SubscriptionManager.allSubMatch(newResource);
+			} else {
+				throw new serverException("cannot publish resource");
+			}
 		}
+		
 	}
 	
 	public static void removeResource(Resource oldResource) throws serverException {
@@ -57,7 +70,7 @@ public class ResourceList {
 		if (match == null) {
 			throw new serverException("cannot remove resource");
 		} else {
-			if (!modifyReourceList(false, match)) throw new serverException("cannot remove resource");
+			if (!modifyResourceList(false, match)) throw new serverException("cannot remove resource");
 		}
 	}
 
@@ -99,11 +112,11 @@ public class ResourceList {
         // Query current resource list for resources that match the template
         for (Resource curr_res: resourceList){
             if (in_res.getChannel().equals(curr_res.getChannel()) && 
-                    in_res.getOwner().equals(curr_res.getOwner()) &&
+                    compareOwner(in_res.getOwner(), curr_res.getOwner()) &&
                     compareTags(in_res.getTags(), curr_res.getTags()) &&
                     compareUri(in_res.getUri(), curr_res.getUri()) &&
-                        (curr_res.getName().contains(in_res.getName()) ||
-                        curr_res.getDescription().contains(in_res.getDescription()))) 
+                    curr_res.getName().contains(in_res.getName()) &&
+                    curr_res.getDescription().contains(in_res.getDescription())) 
             {
                 
                 //Copy current resource into results list if it matches criterion
@@ -118,6 +131,28 @@ public class ResourceList {
         return results;
     }
     
+    public static boolean queryingForSubscription(Resource template, Resource curr_res) {
+    	if (template.getChannel().equals(curr_res.getChannel()) && 
+                compareOwner(template.getOwner(), curr_res.getOwner()) &&
+                compareTags(template.getTags(), curr_res.getTags()) &&
+                compareUri(template.getUri(), curr_res.getUri()) &&
+                curr_res.getName().contains(template.getName()) &&
+                curr_res.getDescription().contains(template.getDescription())) 
+        {
+    		return true;
+        }
+    	return false;
+    }
+    
+    private static boolean compareOwner(String in_owner, String curr_owner) {
+        if (in_owner.equals("")) {
+            return true;
+        }
+        else {
+            return (in_owner.equals(curr_owner));
+        }
+    }
+
     //Compare the two URIs for Query purposes. If the incoming URI has no host i.e. is empty, it should match all URIs
     //...otherwise only an exact match is acceptable
     private static boolean compareUri(URI in_uri, URI curr_uri) {
@@ -130,13 +165,10 @@ public class ResourceList {
 
     //Compare the two tag sets. The incoming resource template's tags should be a subset of the current resource's.
     private static boolean compareTags(List<String> in_res, List<String> curr_res) {
-        if (in_res.size() == 0 && curr_res.size() == 0) {
+        if (in_res.size() == 0) {
             return true;
         }
-        else if (in_res.size() == 0 && curr_res.size() != 0){
-            return false;
-        }
-        else if (in_res.size() != 0 && curr_res.size() == 0){
+        else if (curr_res.size() == 0) {
             return false;
         }
         else {

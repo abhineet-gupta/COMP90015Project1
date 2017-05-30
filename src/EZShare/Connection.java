@@ -1,6 +1,6 @@
 /*
  * Distributed Systems
- * Group Project 1
+ * Group Project 2
  * Sem 1, 2017
  * Group: AALT
  * 
@@ -18,7 +18,9 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
 
-import org.apache.commons.cli.CommandLine;
+import javax.net.ssl.SSLSocket;
+import javax.net.ssl.SSLSocketFactory;
+
 import org.json.simple.JSONArray;
 
 import org.json.simple.JSONObject;
@@ -26,29 +28,54 @@ import org.json.simple.parser.JSONParser;
 import org.json.simple.parser.ParseException;
 
 public class Connection implements Runnable {
-	private static final int SECS_TO_TIMEOUT = 2;  //how long to wait for an open connection
-    private Socket client;
+//	private static final int SECS_TO_TIMEOUT = 2;  //how long to wait for an open connection
+ // Normal timeout duration for closing non-persistent connections
+    private static final int SOCKET_NORM_TIMEOUT_S = 2*1000;    //ms
+    
+    // Timeout duration for connection that should stay open for long
+    private static final int SOCKET_LONG_TIMEOUT_S = 600*1000;    //ms
+    
+    private Socket unsecClient;
+    private SSLSocket sClient;
 	private String serverSecret;
 	private Boolean debug;
+	private Boolean secure;
 	private String hostname;
 	private int port;
 	
-	public Connection(CommandLine cmd, Socket client, String secret, String hostname, int port) {
-		this.client = client;
+	public Connection(Boolean secure, Boolean debug, Socket client, String secret, String hostname, int port) {
+		this.unsecClient = client;
 		this.serverSecret = secret;
 		this.hostname = hostname;
-		this.debug = cmd.hasOption("debug") ? true : false;
+		this.debug = debug;
 		this.port = port;
+		this.secure = secure;
 	}
 	
-	@SuppressWarnings("unchecked")
+	public Connection(Boolean secure, Boolean debug, SSLSocket sClient, String secret, String hostname, int port) {
+	    this.sClient = sClient;
+        this.serverSecret = secret;
+        this.hostname = hostname;
+        this.debug = debug;
+        this.port = port;
+        this.secure = secure;
+    }
+
+    @SuppressWarnings("unchecked")
 	//JSONObject extends HashMap but does not have type parameters as HashMap would expect...
 	
     @Override
 	public void run() {
+        DataInputStream input = null;
+        DataOutputStream output = null;
 		try {
-			DataInputStream input = new DataInputStream(client.getInputStream());
-			DataOutputStream output = new DataOutputStream(client.getOutputStream());			
+		    if (secure) {
+		        input = new DataInputStream(sClient.getInputStream());
+		        output = new DataOutputStream(sClient.getOutputStream());
+            } else {
+                input = new DataInputStream(unsecClient.getInputStream());
+                output = new DataOutputStream(unsecClient.getOutputStream());
+            }						
 			JSONParser parser = new JSONParser();
 			
 			JSONObject client_request = (JSONObject) parser.parse(input.readUTF());
@@ -78,6 +105,9 @@ public class Connection implements Runnable {
 			case "EXCHANGE":
                 exchange(client_request, output);
                 break;
+			case "SUBSCRIBE":
+				subscribe(client_request, input, output);
+				break;
 			default:
 				JSONObject reply = new JSONObject();
 				reply.put("response", "error");
@@ -87,7 +117,20 @@ public class Connection implements Runnable {
                     System.out.println(new Timestamp(System.currentTimeMillis())
                             + " - [DEBUG] - SENT: " + reply.toJSONString());
                 }
+				
+    			if (secure){sClient.close();}
+    	        else {unsecClient.close();}
 			}	
+		} catch (SocketException e){
+		    if (debug) {
+                System.out.println(new Timestamp(System.currentTimeMillis())
+                        +" - [FINE] - (Run) Connection closed by server.");
+            }
+		} catch (SocketTimeoutException e) {
+		    if (debug) {
+                System.out.println(new Timestamp(System.currentTimeMillis())
+                        +" - [FINE] - (Run) Connection closed.");
+            }
 		} catch (IOException e) {
 		    e.printStackTrace();
 		} catch (ParseException | ClassCastException e) {
@@ -95,7 +138,6 @@ public class Connection implements Runnable {
 			reply.put("response", "error");
 			reply.put("errorMessage", "missing or incorrect type for command");
 			try {
-				DataOutputStream output = new DataOutputStream(client.getOutputStream());
 				output.writeUTF(reply.toJSONString());
 				if (debug) {
                     System.out.println(new Timestamp(System.currentTimeMillis()) 
@@ -104,7 +146,7 @@ public class Connection implements Runnable {
 			} catch (IOException e1) {
 				e1.printStackTrace();
 			}
-		}		
+		} 
 	}
 	
 	@SuppressWarnings("unchecked")
@@ -135,6 +177,7 @@ public class Connection implements Runnable {
             JSONObject reply = new JSONObject();
             reply.put("response", "success");
             output.writeUTF(reply.toJSONString());
+            output.flush();
             if (debug) {
                 System.out.println(new Timestamp(System.currentTimeMillis())
                         + " - [DEBUG] - SENT: " + reply.toJSONString());
@@ -295,7 +338,14 @@ public class Connection implements Runnable {
                 List<Resource> relay_res_results = new ArrayList<Resource>();
                 if (client_request.containsKey("relay")) {
                     //only propagate when there are other servers in the list
-                    if ((Boolean)client_request.get("relay") && ServerList.getLength() > 0) {
+                    int serverListLength = 0;
+                    if (secure) {
+                        serverListLength = ServerListManager.getSecServerList().getLength();
+                    } else {
+                        serverListLength = ServerListManager.getUnsecServerList().getLength();
+                    }
+                    
+                    if ((Boolean)client_request.get("relay") && serverListLength > 0) {
                         relay_res_results = propagateQuery(client_request);
                         result_cnt += relay_res_results.size();
                     }
@@ -313,7 +363,13 @@ public class Connection implements Runnable {
 
                 //send each resource to client
                 for (Resource res: res_results){
-                    JSONObject resource_temp = this.Resource2JSONObject(res); 
+                    JSONObject resource_temp = Resource2JSONObject(res); 
+                    
+                    //If the result contains an owner (not empty), replace it with "*"
+                    if(!resource_temp.get("owner").equals("")) {
+                    	resource_temp.put("owner", "*");
+                    }
+                    
                     output.writeUTF(resource_temp.toJSONString());
                     if (debug) {
                         System.out.println(new Timestamp(System.currentTimeMillis())
@@ -330,16 +386,18 @@ public class Connection implements Runnable {
                             + " - [DEBUG] - SENT: " + result_size.toJSONString());
                 }
                 
-            } catch (Exception e) { //invalid resourceTemplate
-                JSONObject inv_res = new JSONObject();
-                inv_res.put("response", "error");
-                inv_res.put("errorMessage", "invalid resourceTemplate");
-                output.writeUTF(inv_res.toJSONString());
-                if (debug) {
-                    System.out.println(new Timestamp(System.currentTimeMillis())
-                            + " - [DEBUG] - SENT: " + inv_res.toJSONString());
-                }
-            }            
+            } catch (serverException e){ //invalid resourceTemplate
+              JSONObject inv_res = new JSONObject();
+              inv_res.put("response", "error");
+              inv_res.put("errorMessage", "invalid resourceTemplate");
+              output.writeUTF(inv_res.toJSONString());
+              if (debug) {
+                  System.out.println(new Timestamp(System.currentTimeMillis())
+                          + " - [DEBUG] - SENT: " + inv_res.toJSONString());
+              }
+            } catch (Exception e) { 
+                e.printStackTrace();
+            }
         } else {
             // Missing resource template error - send to client
             JSONObject error = new JSONObject();
@@ -372,7 +430,12 @@ public class Connection implements Runnable {
         command.put("resourceTemplate", res);
 
         //for each server from server list
-        JSONArray serv_list = ServerList.getCopyServerList();
+        JSONArray serv_list = null;
+        if (secure) {
+            serv_list = ServerListManager.getSecServerList().getCopyServerList();
+        } else {
+            serv_list = ServerListManager.getUnsecServerList().getCopyServerList();
+        }
         for (int i = 0; i < serv_list.size(); i++) {
 
             //Get server details
@@ -382,14 +445,27 @@ public class Connection implements Runnable {
             
             //Send QUERY command to that server
             try {
-                Socket socket = new Socket(hostname, port);
-                socket.setSoTimeout(SECS_TO_TIMEOUT);
-                //Get I/O streams for connection
-                DataInputStream input = new DataInputStream(socket.getInputStream());
-                DataOutputStream output = new DataOutputStream(socket.getOutputStream());
+                SSLSocketFactory sslsocketfactory = (SSLSocketFactory) SSLSocketFactory.getDefault();
+                SSLSocket sslSocket = null;
+                Socket unsecSocket = null;
+                DataInputStream input;
+                DataOutputStream output;
+                
+                if (secure){
+                    sslSocket = (SSLSocket) sslsocketfactory.createSocket(hostname, port);
+                  //Get I/O streams for connection
+                    input = new DataInputStream(sslSocket.getInputStream());
+                    output = new DataOutputStream(sslSocket.getOutputStream());
+                    sslSocket.setSoTimeout(SOCKET_NORM_TIMEOUT_S);
+                } else{
+                    unsecSocket = new Socket(hostname, port);
+                    input = new DataInputStream(unsecSocket.getInputStream());
+                    output = new DataOutputStream(unsecSocket.getOutputStream());
+                    unsecSocket.setSoTimeout(SOCKET_NORM_TIMEOUT_S);
+                }
                 
                 //record start time
-                long startTime = System.currentTimeMillis();
+//                long startTime = System.currentTimeMillis();
                 
                 //send request
                 output.writeUTF(command.toJSONString());
@@ -399,24 +475,39 @@ public class Connection implements Runnable {
                 }
                 output.flush();
                             
-                while (true) {
-                    if (input.available() > 0) {
-                        //get results and store in results list
-                        JSONObject temp_response = (JSONObject) parser.parse(input.readUTF());
+                String read;
+                while (true) {                    
+                    try {
+                        if ((read = input.readUTF()) != null) {
+                            //get results and store in results list
+                            JSONObject temp_response = (JSONObject) parser.parse(read);
+                            if (debug) {
+                                System.out.println(new Timestamp(System.currentTimeMillis())
+                                        + " - [DEBUG] - RECEIVED: " + temp_response);
+                            }
+                            if (temp_response.containsKey("uri")) {
+                                Resource temp_res = this.JSONObj2Resource(temp_response);
+                                prop_results.add(temp_res);
+                            }
+                        }
+                    } catch (SocketException e){    //when the other side closes the connection
                         if (debug) {
                             System.out.println(new Timestamp(System.currentTimeMillis())
-                                    + " - [DEBUG] - RECEIVED: " + temp_response);
+                                    +" - [FINE] - (Propagate Query) Connection closed by server.");
                         }
-                        if (temp_response.containsKey("uri")) {
-                            Resource temp_res = this.JSONObj2Resource(temp_response);
-                            prop_results.add(temp_res);
-                        }
-                    }
-                    if ((System.currentTimeMillis() - startTime) > SECS_TO_TIMEOUT*1000){
                         break;
+                    } catch (SocketTimeoutException e){
+                        if (debug) {
+                            System.out.println(new Timestamp(System.currentTimeMillis())
+                                    +" - [FINE] - (Propagate Query) Connection closed.");
+                        }
+                        break;
+                    } catch (Exception e) {
+                        e.printStackTrace();
                     }
                 }
-                socket.close();
+                if (secure) {sslSocket.close();} 
+                else {unsecSocket.close();}
             } catch (ConnectException e) {
                 //If connection times out for a particular server, just move on
                 //...to the next one in the list. 
@@ -457,7 +548,11 @@ public class Connection implements Runnable {
 				//Because it's read in 'read' mode, it is thread-safe
 				RandomAccessFile byteFile = new RandomAccessFile(f, "r");
 				JSONObject resource = Resource2JSONObject(match);
-				resource.put("owner", "*"); //protect privacy of owner
+				
+                //If the result contains an owner (not empty), replace it with "*"
+                if(!resource.get("owner").equals("")) {
+                	resource.put("owner", "*");
+                }
 				
 				//send file size
 				resource.put("resourceSize", byteFile.length());
@@ -531,8 +626,15 @@ public class Connection implements Runnable {
             }
         }
         try {
+            ServerList sList = null;
+            if (secure){
+                sList = ServerListManager.getSecServerList();
+            } else {
+                sList = ServerListManager.getUnsecServerList();
+            }
+            
             //try to union the new and current list of servers
-            ServerList.update(newServerList, hostname, port);
+            sList.update(newServerList, hostname, port, secure);
             
             JSONObject reply = new JSONObject();
             reply.put("response", "success");
@@ -555,6 +657,158 @@ public class Connection implements Runnable {
         }
     }
 	
+    @SuppressWarnings("unchecked")
+	private void subscribe(JSONObject client_request, 
+	        DataInputStream receiveFromClient, DataOutputStream sendToClient) 
+	                throws IOException {
+    	Resource in_res;
+        JSONParser parser = new JSONParser();
+        
+        if (client_request.containsKey("resourceTemplate")) {
+            try {
+             // The following should throw an invalid resource exception
+    			in_res = this.JSONObj2Resource((JSONObject) 
+    			        parser.parse(client_request.get("resourceTemplate").toString()));
+    			
+    			String id = client_request.get("id").toString();
+    			Boolean relay = (Boolean) client_request.containsKey("relay")? 
+    			        (Boolean) client_request.get("relay") : false;
+    			
+    			JSONObject reply = new JSONObject();
+    			reply.put("response", "success");
+    			reply.put("id", id);
+    			sendToClient.writeUTF(reply.toJSONString());
+    			sendToClient.flush();
+    			if (debug) {
+                    System.out.println(new Timestamp(System.currentTimeMillis())
+                            + " - [DEBUG] - SENT: " + reply.toJSONString());
+                }
+    			
+    			//Create relay/no-relay subscription
+    			Subscription newSub = null;
+    			
+    			if(relay) {
+    			    JSONArray serv_list;
+    			    @SuppressWarnings("rawtypes")    // no parameters to the List object
+                    List relaySocList;
+    			    int serverListLength = 0;
+    			    
+    			    if (secure) {
+                        serv_list = ServerListManager.getSecServerList().getCopyServerList();
+                        serverListLength = ServerListManager.getSecServerList().getLength();
+                        relaySocList = new ArrayList<SSLSocket>();
+                    } else {
+                        serv_list = ServerListManager.getUnsecServerList().getCopyServerList();
+                        serverListLength = ServerListManager.getUnsecServerList().getLength();
+                        relaySocList = new ArrayList<Socket>();
+                    }
+    			    
+    			    SSLSocketFactory sslsocketfactory = (SSLSocketFactory) SSLSocketFactory.getDefault();
+                    SSLSocket sslSocket = null;
+                    Socket unsecSocket = null;
+                    
+    			    if(serverListLength > 0){
+    					for (int i = 0; i < serverListLength; i++) {
+    						//Get server details
+    						JSONObject server = (JSONObject)serv_list.get(i);
+    						String hostname = (String) server.get("hostname");
+    						int port = Integer.parseInt(server.get("port").toString());
+    						
+    						if (secure) {
+    						    sslSocket = (SSLSocket) sslsocketfactory.createSocket(hostname, port);
+    						    sslSocket.setSoTimeout(SOCKET_LONG_TIMEOUT_S);
+    						    relaySocList.add(sslSocket);
+                            } else {
+                                unsecSocket = new Socket(hostname, port);
+                                unsecSocket.setSoTimeout(SOCKET_LONG_TIMEOUT_S);
+                                relaySocList.add(unsecSocket);
+                            }						
+    					}
+    					newSub = new Subscription(in_res, sendToClient, id, relaySocList, 
+    					        secure, relay, debug);
+    					//Start subscribe relay
+    					newSub.ListenSubscribeRelay();
+    				}
+    			    else {   //when server list is empty but relay is true - for future servers exchanged
+    			        newSub = new Subscription(in_res, sendToClient, id, relaySocList, 
+    			                secure, relay, debug);
+    			    }
+    			} else { // if relay in Subscribe is False
+    				newSub = new Subscription(in_res, sendToClient, id, relay, debug);
+    			}
+    			
+    			//match resource with existing resources
+    			newSub.matchResource();
+    			//add to subscription manager to match new resource + connecting to new servers
+    			SubscriptionManager.addSubscription(newSub);
+    			
+    			//Keep listening from client
+    			String read;
+    			while(true) {
+    			    if ((read = receiveFromClient.readUTF()) != null) {
+    			        if (debug) {
+    		                System.out.println(new Timestamp(System.currentTimeMillis())
+    		                        + " - [DEBUG] - RECEIVED: " + read);
+    		            }
+    					JSONObject newClientRequest = (JSONObject) parser.parse(read);
+    					String command = newClientRequest.get("command").toString();
+    					if(command.equals("SUBSCRIBE")) {
+    						in_res = this.JSONObj2Resource((JSONObject) 
+    						        parser.parse(client_request.get("resourceTemplate").toString()));
+    						newSub.getNewTemplate(in_res);
+    					} else if (command.equals("UNSUBSCRIBE")) {
+    						int totalResultSize = newSub.unsubscribe();
+    						reply = new JSONObject();
+    						reply.put("resultSize", totalResultSize);
+    						sendToClient.writeUTF(reply.toJSONString());
+    						
+    						if (debug) {
+    							System.out.println(new Timestamp(System.currentTimeMillis())
+    									+ " - [DEBUG] - SENT: " + reply.toJSONString());
+    						}
+    						
+    						SubscriptionManager.removeSubscription(newSub);
+    						break;
+    					} else {
+    					    reply = new JSONObject();
+    		                reply.put("response", "error");
+    		                reply.put("errorMessage", "invalid command");
+    		                sendToClient.writeUTF(reply.toJSONString());
+    		                if (debug) {
+    		                    System.out.println(new Timestamp(System.currentTimeMillis())
+    		                            + " - [DEBUG] - SENT: " + reply.toJSONString());
+    		                }
+    					}
+    			    }
+    			}
+    		} catch (SocketException e){
+                if (debug) {
+                    System.out.println(new Timestamp(System.currentTimeMillis())
+                            +" - [FINE] - (Run) Connection closed by server.");
+                }
+            } catch (SocketTimeoutException e) {
+                if (debug) {
+                    System.out.println(new Timestamp(System.currentTimeMillis())
+                            +" - [FINE] - (Run) Connection closed.");
+                }
+            } catch (serverException | ParseException e) {
+    			e.printStackTrace();
+    		} catch (Exception e) {
+    			e.printStackTrace();
+    		}
+        } else {
+            // Missing resource template error - send to client
+            JSONObject error = new JSONObject();
+            error.put("response", "error");
+            error.put("errorMessage", "missing resourceTemplate");
+            sendToClient.writeUTF(error.toJSONString());
+            if (debug) {
+                System.out.println(new Timestamp(System.currentTimeMillis())
+                        + " - [DEBUG] - SENT: " + error.toJSONString());
+            }
+        }
+    }
+    
     //Convert incoming resource (in JSON format) into a Resource object
 	private Resource JSONObj2Resource(JSONObject resource) throws serverException {
 		//handle 3 potential cases for most fields:
@@ -635,7 +889,7 @@ public class Connection implements Runnable {
 	
 	//Reverse of the above; convert Resource object to JSON
 	@SuppressWarnings("unchecked")
-    private JSONObject Resource2JSONObject(Resource resource) {
+    public static JSONObject Resource2JSONObject(Resource resource) {
         JSONObject jobj = new JSONObject();
 
         jobj.put("name", resource.getName());

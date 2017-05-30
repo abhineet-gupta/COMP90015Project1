@@ -1,6 +1,6 @@
 /*
  * Distributed Systems
- * Group Project 1
+ * Group Project 2
  * Sem 1, 2017
  * Group: AALT
  * 
